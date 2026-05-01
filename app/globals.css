@@ -1,0 +1,47 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --surface: 245 242 236;
+  --elevated: 255 252 247;
+  --border: 212 206 195;
+  --text: 22 24 29;
+  --muted: 92 96 106;
+  --accent: 58 91 77;
+  --accent-soft: 224 234 229;
+}
+
+.dark {
+  --surface: 13 17 23;
+  --elevated: 20 25 32;
+  --border: 53 63 76;
+  --text: 238 240 244;
+  --muted: 157 164 176;
+  --accent: 147 184 165;
+  --accent-soft: 41 56 49;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  color: rgb(var(--text));
+  background:
+    radial-gradient(circle at top, rgba(112, 146, 126, 0.16), transparent 32%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.25), rgba(255, 255, 255, 0)),
+    rgb(var(--surface));
+  min-height: 100vh;
+}
+
+.dark body {
+  background:
+    radial-gradient(circle at top, rgba(122, 154, 139, 0.12), transparent 28%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0)),
+    rgb(var(--surface));
+}
+
+::selection {
+  background: rgba(89, 125, 104, 0.22);
+}
