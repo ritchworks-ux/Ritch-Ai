@@ -1,5 +1,6 @@
 "use client";
 
+import { track } from "@vercel/analytics/react";
 import { motion } from "framer-motion";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -7,6 +8,15 @@ type Message = {
   id: string;
   role: "assistant" | "user";
   content: string;
+};
+
+type VisitorEventType = "resume-download" | "linkedin-click";
+
+type VisitorEvent = {
+  type: VisitorEventType;
+  label: string;
+  path: string;
+  timestamp: string;
 };
 
 type IconName =
@@ -32,14 +42,14 @@ const initialAssistantMessage: Message = {
   id: "assistant-initial",
   role: "assistant",
   content:
-    "Hi, I'm here to help you learn more about Ritch. You can ask about his background for hiring, or share the kind of IT support you need and I'll point you to the right next step.",
+    "Hi, I'm Ritch AI — Ritch Tribiana's AI-powered portfolio assistant. Nice to meet you. May I know your name and what best describes you: Recruiter / HR, Hiring Manager, Headhunter, Small Business Owner, Potential IT Client, Fellow IT Professional, or Other? Also, are you here to assess Ritch for a role, explore his IT services, or learn more about his background?",
 };
 
 const suggestedPrompts = [
-  "Why should a hiring manager consider Ritch?",
-  "What Enterprise IT Support experience does Ritch have?",
-  "We need help setting up email and domain. Where should we inquire?",
-  "How can Ritch support a hiring conversation?",
+  "I'm a recruiter assessing Ritch for IT Support.",
+  "I'm a hiring manager looking for an L2 Support Engineer.",
+  "I'm a small business owner needing email migration help.",
+  "I want to learn more about Ritch's background.",
 ];
 
 function Icon({ name, className = "h-5 w-5" }: { name: IconName; className?: string }) {
@@ -249,7 +259,8 @@ export default function Home() {
   const chatViewportRef = useRef<HTMLDivElement | null>(null);
   const latestMessagesRef = useRef<Message[]>([initialAssistantMessage]);
   const sessionIdRef = useRef(createSessionId());
-  const summarySentRef = useRef(false);
+  const lastSummarySignatureRef = useRef("");
+  const visitorEventsRef = useRef<VisitorEvent[]>([]);
   const idleTimerRef = useRef<number | null>(null);
   const typingTimerRef = useRef<number | null>(null);
 
@@ -284,16 +295,13 @@ export default function Home() {
 
   useEffect(() => {
     const sendSessionSummary = (trigger: "idle" | "pagehide") => {
-      if (summarySentRef.current) {
-        return;
-      }
-
       const sessionMessages = latestMessagesRef.current
         .filter((message) => message.id !== initialAssistantMessage.id)
         .map((message) => ({
           role: message.role,
           content: message.content,
         }));
+      const events = visitorEventsRef.current;
 
       const hasUserMessages = sessionMessages.some((message) => message.role === "user");
 
@@ -301,12 +309,25 @@ export default function Home() {
         return;
       }
 
-      summarySentRef.current = true;
+      const summarySignature = JSON.stringify({
+        trigger,
+        messageCount: sessionMessages.length,
+        lastMessage: sessionMessages.at(-1),
+        eventCount: events.length,
+        lastEvent: events.at(-1),
+      });
+
+      if (lastSummarySignatureRef.current === summarySignature) {
+        return;
+      }
+
+      lastSummarySignatureRef.current = summarySignature;
 
       const payload = JSON.stringify({
         sessionId: sessionIdRef.current,
         trigger,
         messages: sessionMessages,
+        events,
       });
 
       if (trigger === "pagehide" && typeof navigator !== "undefined" && navigator.sendBeacon) {
@@ -323,7 +344,7 @@ export default function Home() {
         body: payload,
         keepalive: true,
       }).catch(() => {
-        summarySentRef.current = false;
+        lastSummarySignatureRef.current = "";
       });
     };
 
@@ -367,6 +388,36 @@ export default function Home() {
       window.removeEventListener("pagehide", handlePageHide);
     };
   }, []);
+
+  const trackVisitorEvent = (type: VisitorEventType, label: string) => {
+    const event: VisitorEvent = {
+      type,
+      label,
+      path: window.location.pathname,
+      timestamp: new Date().toISOString(),
+    };
+
+    visitorEventsRef.current = [...visitorEventsRef.current, event].slice(-25);
+    track("Portfolio Visitor Event", {
+      type,
+      label,
+      path: event.path,
+    });
+
+    void fetch("/api/visitor-event", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        sessionId: sessionIdRef.current,
+        ...event,
+      }),
+      keepalive: true,
+    }).catch(() => {
+      // Click tracking should never block the visitor's navigation.
+    });
+  };
 
   const showSuggestedPrompts =
     messages.length === 1 && messages[0]?.id === initialAssistantMessage.id && !isLoading;
@@ -440,6 +491,12 @@ export default function Home() {
 
     const requestId = Date.now();
     activeRequestRef.current = requestId;
+    const conversationMessages = [...messages, userMessage]
+      .filter((message) => message.id !== initialAssistantMessage.id)
+      .map((message) => ({
+        role: message.role,
+        content: message.content,
+      }));
 
     try {
       const response = await fetch("/api/chat", {
@@ -447,7 +504,10 @@ export default function Home() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ message: trimmed }),
+        body: JSON.stringify({
+          message: trimmed,
+          messages: conversationMessages,
+        }),
       });
 
       const data = (await response.json()) as { reply?: string; error?: string };
@@ -534,38 +594,35 @@ export default function Home() {
       typingTimerRef.current = null;
     }
 
-    if (!summarySentRef.current) {
-      const sessionMessages = latestMessagesRef.current
-        .filter((message) => message.id !== initialAssistantMessage.id)
-        .map((message) => ({
-          role: message.role,
-          content: message.content,
-        }));
+    const sessionMessages = latestMessagesRef.current
+      .filter((message) => message.id !== initialAssistantMessage.id)
+      .map((message) => ({
+        role: message.role,
+        content: message.content,
+      }));
 
-      const hasUserMessages = sessionMessages.some((message) => message.role === "user");
+    const hasUserMessages = sessionMessages.some((message) => message.role === "user");
 
-      if (hasUserMessages) {
-        summarySentRef.current = true;
-        void fetch("/api/session-summary", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            sessionId: sessionIdRef.current,
-            trigger: "manual-reset",
-            messages: sessionMessages,
-          }),
-          keepalive: true,
-        }).catch(() => {
-          summarySentRef.current = false;
-        });
-      }
+    if (hasUserMessages) {
+      void fetch("/api/session-summary", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          sessionId: sessionIdRef.current,
+          trigger: "manual-reset",
+          messages: sessionMessages,
+          events: visitorEventsRef.current,
+        }),
+        keepalive: true,
+      });
     }
 
     activeRequestRef.current = 0;
     sessionIdRef.current = createSessionId();
-    summarySentRef.current = false;
+    lastSummarySignatureRef.current = "";
+    visitorEventsRef.current = [];
     setMessages([initialAssistantMessage]);
     setInput("");
     setIsLoading(false);
@@ -598,7 +655,7 @@ export default function Home() {
       <button
         type="button"
         onClick={toggleTheme}
-        className={`fixed right-5 top-7 z-50 flex h-11 w-11 items-center justify-center rounded-full border shadow-lg backdrop-blur-xl transition hover:scale-105 md:right-8 ${theme.chip}`}
+        className={`fixed right-4 top-24 z-50 flex h-11 w-11 items-center justify-center rounded-full border shadow-lg backdrop-blur-xl transition hover:scale-105 sm:top-7 md:right-8 ${theme.chip}`}
         aria-label="Toggle light and dark mode"
         title={isDark ? "Switch to light mode" : "Switch to dark mode"}
       >
@@ -626,6 +683,7 @@ export default function Home() {
               href="https://www.linkedin.com/in/ritch-tribiana/"
               target="_blank"
               rel="noreferrer"
+              onClick={() => trackVisitorEvent("linkedin-click", "Header LinkedIn clicked")}
               className={`hidden rounded-full border px-4 py-2 text-sm sm:inline-flex sm:items-center ${theme.chip}`}
             >
               <Icon name="linkedin" className="mr-2 h-4 w-4" />
@@ -635,6 +693,7 @@ export default function Home() {
               href="./Ritch_Tribiana_Enterprise_IT_Resume.pdf"
               target="_blank"
               rel="noreferrer"
+              onClick={() => trackVisitorEvent("resume-download", "Header resume opened")}
               className={`inline-flex items-center rounded-full px-5 py-2 text-sm ${theme.button}`}
             >
               <Icon name="file" className="mr-2 h-4 w-4" />
@@ -751,7 +810,7 @@ export default function Home() {
                       }`}
                     >
                       <div
-                        className={`flex max-w-[88%] items-start gap-2 md:max-w-[74%] ${
+                        className={`flex max-w-full items-start gap-2 md:max-w-[74%] ${
                           message.role === "user" ? "flex-row-reverse" : "flex-row"
                         }`}
                       >
@@ -860,6 +919,7 @@ export default function Home() {
             href="https://www.linkedin.com/in/ritch-tribiana/"
             target="_blank"
             rel="noreferrer"
+            onClick={() => trackVisitorEvent("linkedin-click", "Footer LinkedIn clicked")}
           >
             <Icon name="linkedin" className="h-4 w-4" />
             linkedin.com/in/ritch-tribiana

@@ -18,6 +18,21 @@ export type SessionSummaryMessage = {
   content: string;
 };
 
+export type VisitorEventType = "resume-download" | "linkedin-click";
+
+export type VisitorEvent = {
+  type: VisitorEventType;
+  label: string;
+  path: string;
+  timestamp: string;
+};
+
+export type VisitorEventRecord = VisitorEvent & {
+  sessionId: string;
+  source: "portfolio-visitor-event";
+  note: string;
+};
+
 export type SessionSummaryRecord = {
   sessionId: string;
   trigger: "idle" | "pagehide" | "manual-reset";
@@ -25,6 +40,8 @@ export type SessionSummaryRecord = {
   audience: InquiryAudience;
   userMessageCount: number;
   assistantMessageCount: number;
+  eventCount: number;
+  events: VisitorEvent[];
   sanitizedTranscript: string[];
   timestamp: string;
   source: "portfolio-chat";
@@ -172,6 +189,7 @@ function buildEmailText(record: InquiryRecord) {
 function buildSessionEmailText(record: SessionSummaryRecord) {
   const guidance = buildInterviewGuidance(record);
   const learningSources = buildLearningSourcesSection(record);
+  const visitorEvents = buildVisitorEventsSection(record.events);
 
   return [
     "New Ritch AI session summary",
@@ -181,9 +199,13 @@ function buildSessionEmailText(record: SessionSummaryRecord) {
     `The conversation was categorized as ${record.category} for a ${record.audience} audience.`,
     `It ended because of: ${record.trigger}.`,
     `There were ${record.userMessageCount} visitor message(s) and ${record.assistantMessageCount} assistant message(s).`,
+    `Tracked visitor event(s): ${record.eventCount}.`,
     "",
-    "Conversation snapshot:",
+    "Full sanitized conversation:",
     ...record.sanitizedTranscript,
+    "",
+    "Visitor activity:",
+    ...visitorEvents,
     "",
     "Suggested next step:",
     record.recommendation,
@@ -204,6 +226,22 @@ function buildSessionEmailText(record: SessionSummaryRecord) {
   ].join("\n");
 }
 
+function buildVisitorEventEmailText(record: VisitorEventRecord) {
+  return [
+    "New Ritch portfolio visitor activity",
+    "",
+    `Activity: ${record.label}`,
+    `Event type: ${record.type}`,
+    `Path: ${record.path}`,
+    `Timestamp: ${record.timestamp}`,
+    `Session ID: ${record.sessionId}`,
+    `Source: ${record.source}`,
+    "",
+    "Note:",
+    record.note,
+  ].join("\n");
+}
+
 function buildLearningSourcesSection(record: SessionSummaryRecord) {
   if (record.learningSources.length === 0) {
     return [
@@ -215,6 +253,14 @@ function buildLearningSourcesSection(record: SessionSummaryRecord) {
   return record.learningSources.map(
     (source) => `- ${source.topic}: ${source.label} - ${source.url}`,
   );
+}
+
+function buildVisitorEventsSection(events: VisitorEvent[]) {
+  if (events.length === 0) {
+    return ["- No resume or LinkedIn click was tracked during this session."];
+  }
+
+  return events.map((event) => `- ${event.timestamp}: ${event.label} (${event.path})`);
 }
 
 function buildInterviewGuidance(record: SessionSummaryRecord) {
@@ -284,10 +330,12 @@ export function buildSessionSummaryRecord({
   sessionId,
   trigger,
   messages,
+  events = [],
 }: {
   sessionId: string;
   trigger: "idle" | "pagehide" | "manual-reset";
   messages: SessionSummaryMessage[];
+  events?: VisitorEvent[];
 }): SessionSummaryRecord {
   const relevantMessages = messages.filter((message) => collapseWhitespace(message.content).length > 0);
   const userMessages = relevantMessages.filter((message) => message.role === "user");
@@ -296,8 +344,7 @@ export function buildSessionSummaryRecord({
   const { category, audience } = categorizeInquiry(combinedUserText);
 
   const sanitizedTranscript = relevantMessages
-    .slice(-10)
-    .map((message) => `${message.role === "user" ? "Visitor" : "Ritch AI"}: ${sanitizeText(message.content, 280)}`);
+    .map((message) => `${message.role === "user" ? "Visitor" : "Ritch AI"}: ${sanitizeText(message.content, 1200)}`);
 
   const recommendation =
     audience === "it-support"
@@ -316,12 +363,36 @@ export function buildSessionSummaryRecord({
     audience,
     userMessageCount: userMessages.length,
     assistantMessageCount: assistantMessages.length,
+    eventCount: events.length,
+    events,
     sanitizedTranscript,
     timestamp: new Date().toISOString(),
     source: "portfolio-chat",
     recommendation,
     learningSources,
     note: "Sanitized session summary for follow-up and assistant-improvement review.",
+  };
+}
+
+export function buildVisitorEventRecord({
+  sessionId,
+  type,
+  label,
+  path,
+}: {
+  sessionId: string;
+  type: VisitorEventType;
+  label: string;
+  path: string;
+}): VisitorEventRecord {
+  return {
+    sessionId,
+    type,
+    label: sanitizeText(label, 120),
+    path: sanitizeText(path, 200),
+    timestamp: new Date().toISOString(),
+    source: "portfolio-visitor-event",
+    note: "Sanitized visitor activity log for portfolio follow-up and conversion tracking.",
   };
 }
 
@@ -380,6 +451,42 @@ export async function emailSessionSummary(record: SessionSummaryRecord) {
   return { sent: true as const };
 }
 
+export async function emailVisitorEvent(record: VisitorEventRecord) {
+  const host = process.env.SMTP_HOST;
+  const port = Number(process.env.SMTP_PORT || "587");
+  const user = process.env.SMTP_USER;
+  const pass = process.env.SMTP_PASS;
+  const from = process.env.SUMMARY_EMAIL_FROM || user;
+  const to = process.env.SUMMARY_EMAIL_TO || "ritch.tribiana@gmail.com";
+
+  if (!host || !user || !pass || !from || !to) {
+    console.info("Visitor event email skipped: SMTP settings not configured.", {
+      type: record.type,
+      sessionId: record.sessionId,
+    });
+    return { sent: false, reason: "smtp_not_configured" as const };
+  }
+
+  const transporter = nodemailer.createTransport({
+    host,
+    port,
+    secure: port === 465,
+    auth: {
+      user,
+      pass,
+    },
+  });
+
+  await transporter.sendMail({
+    from,
+    to,
+    subject: `[Portfolio Activity] ${record.label}`,
+    text: buildVisitorEventEmailText(record),
+  });
+
+  return { sent: true as const };
+}
+
 export async function persistInquirySummary(record: InquiryRecord) {
   const webhookUrl = process.env.LEARNING_WEBHOOK_URL;
 
@@ -422,6 +529,31 @@ export async function persistSessionSummary(record: SessionSummaryRecord) {
 
   if (!response.ok) {
     throw new Error(`Learning webhook rejected session payload with status ${response.status}`);
+  }
+
+  return { saved: true as const };
+}
+
+export async function persistVisitorEvent(record: VisitorEventRecord) {
+  const webhookUrl = process.env.LEARNING_WEBHOOK_URL;
+
+  if (!webhookUrl) {
+    return { saved: false, reason: "webhook_not_configured" as const };
+  }
+
+  const response = await fetch(webhookUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      recordType: "visitor-event",
+      ...record,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Learning webhook rejected visitor event payload with status ${response.status}`);
   }
 
   return { saved: true as const };

@@ -3,18 +3,26 @@ import {
   buildSessionSummaryRecord,
   emailSessionSummary,
   persistSessionSummary,
+  type VisitorEvent,
+  type VisitorEventType,
 } from "@/app/lib/inquiry-intelligence";
 
 type SessionSummaryPayload = {
   sessionId?: unknown;
   trigger?: unknown;
   messages?: unknown;
+  events?: unknown;
 };
 
 type SessionSummaryMessage = {
   role: "assistant" | "user";
   content: string;
 };
+
+const allowedEventTypes = new Set<VisitorEventType>([
+  "resume-download",
+  "linkedin-click",
+]);
 
 function isMessage(value: unknown): value is SessionSummaryMessage {
   if (!value || typeof value !== "object") {
@@ -25,6 +33,27 @@ function isMessage(value: unknown): value is SessionSummaryMessage {
   return (
     (candidate.role === "assistant" || candidate.role === "user") &&
     typeof candidate.content === "string"
+  );
+}
+
+function isVisitorEvent(value: unknown): value is VisitorEvent {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as {
+    type?: unknown;
+    label?: unknown;
+    path?: unknown;
+    timestamp?: unknown;
+  };
+
+  return (
+    typeof candidate.type === "string" &&
+    allowedEventTypes.has(candidate.type as VisitorEventType) &&
+    typeof candidate.label === "string" &&
+    typeof candidate.path === "string" &&
+    typeof candidate.timestamp === "string"
   );
 }
 
@@ -41,6 +70,14 @@ export async function POST(request: Request) {
       ? body.messages.filter(isMessage).map((message) => ({
           role: message.role,
           content: message.content.trim().slice(0, 4000),
+        }))
+      : [];
+    const events = Array.isArray(body.events)
+      ? body.events.filter(isVisitorEvent).map((event) => ({
+          type: event.type,
+          label: event.label.trim().slice(0, 120),
+          path: event.path.trim().slice(0, 200),
+          timestamp: event.timestamp.trim().slice(0, 80),
         }))
       : [];
 
@@ -64,6 +101,7 @@ export async function POST(request: Request) {
       sessionId,
       trigger,
       messages,
+      events,
     });
 
     const [emailResult, persistResult] = await Promise.allSettled([
